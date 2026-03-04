@@ -1,0 +1,128 @@
+Visualizer
+
+users
+	uno solo
+	
+workers
+	id
+	worker_type merchandiser | supervisor
+	parent_id
+	name
+	
+	
+products
+	id
+	upc
+	description
+	
+stores
+	id
+	description
+	lat
+	lng
+	
+workers_x_stores
+	store_id
+	worker_id
+
+daily_data (consolidado)
+	date
+	product_id
+	store_id
+	so_units
+	so_amount
+	inv_on_hand (units)
+	inv_in_transit (units)
+	inv_in_warehouse (units)
+	inv_on_order (units)
+	cataloged
+	created_at
+
+alarms
+	id
+	product_id
+	store_id
+	alarm_type overstock | dead_inventory | poor_display
+	alarm_data [
+		{
+			alarm_day_count
+			doh
+			severity
+			product_weight (1-5)
+			store_weight (1-5)
+			impact
+			inv_on_hand (units)
+			inv_in_transit (units)
+			inv_in_warehouse (units)
+			inv_on_order (units)
+			daily_avg_units
+			daily_avg_amount
+			alarm_settings
+			date
+		},
+		{
+			alarm_day_count
+			doh
+			severity
+			product_weight (1-5)
+			store_weight (1-5)
+			impact
+			inv_on_hand (units)
+			inv_in_transit (units)
+			inv_in_warehouse (units)
+			inv_on_order (units)
+			daily_avg_units
+			daily_avg_amount
+			alarm_settings
+			date
+		}
+	]
+	ref_id
+	status
+	status_reason
+	created_at
+	updated_at
+
+
+alarm_actions
+	id
+	alarm_id
+	notes
+	attachment
+	worker_id
+	created_at
+	metadata 
+	
+
+settings
+	
+alarms_metadata
+	date
+	totals: {
+		store_total_amount:
+		upc_total_amount:
+		store_quantity:
+		upc_quantity:
+	},
+	products [
+		{
+			id:
+		}
+	]
+
+	
+
+Notas
+
+El proceso diario de actualizacion de alarmas tengo que por cada combinacion producto-tienda tengo que ver si existe una alarma abierta
+si existe y el tipo es el mismo, actualizar registro, agregar un item al array
+si existe y el tipo es distinto, tengo que cerrar la alarma actualizando el json que tenia (tomar el id para usarlo como ref_id) y crear una nueva alarma si no existe, 
+crearla para procesar las que se deben cerrar tengo que hacer una consulta con el updated_at menor que hoy y que esten abiertas, 
+buscar en la historia para agregar el ultimpo elemento del array que justifica el cierre.
+
+
+
+
+
+(dead_inventory, poor_display) tiene precedencia sobre overstock.
+

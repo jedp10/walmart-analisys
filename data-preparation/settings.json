@@ -1,0 +1,27 @@
+{
+  "history_window": {
+    "min_days": 14,
+    "max_days": 28
+  },
+  "max_alarm_days": 40,
+  "alarms": {
+    "overstock": {
+      "days_on_hand_threshold": 40,
+      "min_days_threshold": 7
+    },
+    "dead_inventory": {
+      "severities": [
+        { "severity": 1, "days_without_sales_threshold": 2 },
+        { "severity": 2, "days_without_sales_threshold": 3 },
+        { "severity": 3, "days_without_sales_threshold": 4 },
+        { "severity": 4, "days_without_sales_threshold": 5 },
+        { "severity": 5, "days_without_sales_threshold": 6 },
+        { "severity": 6, "days_without_sales_threshold": 7 },
+        { "severity": 7, "days_without_sales_threshold": 8 },
+        { "severity": 8, "days_without_sales_threshold": 9 },
+        { "severity": 9, "days_without_sales_threshold": 10 },
+        { "severity": 10, "days_without_sales_threshold": 11 }
+      ]
+    }
+  }
+}
