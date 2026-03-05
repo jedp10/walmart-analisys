@@ -682,8 +682,8 @@ def generate_all_alarms(cur, target_date):
     print("\n--- Evaluando overstock ---")
     overstock_alarms = evaluate_overstock_alarms(shared, settings)
 
-    # Merge both dicts (overstock wins on collision, unlikely)
-    today_alarms = {**dead_poor_alarms, **overstock_alarms}
+    # Merge both dicts (dead/poor_display wins on collision)
+    today_alarms = {**overstock_alarms, **dead_poor_alarms}
 
     # 4. Fase 2: Upsert
     print("\n--- Upsert alarmas ---")
