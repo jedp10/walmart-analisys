@@ -177,6 +177,9 @@ def count_consecutive_dead_days(items, current_index):
     for i in range(current_index, -1, -1):
         item = items[i]
         if item["inv_on_hand"] is None:
+            if (item["so_units"] or 0) > 0:
+                break_date = item["date"]
+                break
             continue
         if (item["so_units"] or 0) == 0 and item["inv_on_hand"] > 0:
             continue

@@ -1,0 +1,4 @@
+
+Necesitamos incluir en el resumen de arriba de daily data las condiciones que dispararon la alarma con su thresholds.
+En daily data incluir DOH
+Hacer un highlight en la tabla de los registros y campos que hagan cumplir el criterio de la alarma.
