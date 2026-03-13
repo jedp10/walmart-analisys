@@ -90,22 +90,61 @@ def _quintile_from_floor(floor_pct):
 
 def calculate_revenue_quintiles(sales_map):
     """
-    Dado {key: total_sales}, retorna {key: quintile(1-5)}
-    ordenado por facturación descendente, quintil basado en % acumulado "piso".
+    Dado {key: total_sales}, retorna:
+      - dict {key: quintile(1-5)}
+      - list of (key, total_sales, cumulative_pct, quintile) para persistir
+    Ordenado por facturación descendente, quintil basado en % acumulado "piso".
     """
     total = sum(sales_map.values())
     if total == 0:
-        return {}
+        return {}, []
 
     sorted_items = sorted(sales_map.items(), key=lambda x: x[1], reverse=True)
     quintiles = {}
+    details = []
     accumulated = 0.0
 
     for key, sales in sorted_items:
-        quintiles[key] = _quintile_from_floor(accumulated)
+        q = _quintile_from_floor(accumulated)
+        quintiles[key] = q
         accumulated += sales / total
+        details.append((key, round(sales, 2), round(accumulated * 100, 2), q))
 
-    return quintiles
+    return quintiles, details
+
+
+# ---------------------------------------------------------------------------
+# Quintile persistence
+# ---------------------------------------------------------------------------
+
+def save_quintiles_to_db(cur, target_date, product_details, store_details):
+    """
+    Persiste los quintiles calculados en product_sales_quintiles y store_sales_quintiles.
+    Borra los registros del día (idempotencia) y luego inserta en batch.
+    """
+    from psycopg2.extras import execute_values
+
+    # Product quintiles
+    cur.execute("DELETE FROM product_sales_quintiles WHERE date = %s", (target_date,))
+    if product_details:
+        execute_values(
+            cur,
+            "INSERT INTO product_sales_quintiles (date, upc, total_sales, cumulative_sales_pct, quintile) VALUES %s",
+            [(target_date, upc, sales, cum_pct, q) for upc, sales, cum_pct, q in product_details],
+            template="(%s, %s, %s, %s, %s)",
+        )
+
+    # Store quintiles
+    cur.execute("DELETE FROM store_sales_quintiles WHERE date = %s", (target_date,))
+    if store_details:
+        execute_values(
+            cur,
+            "INSERT INTO store_sales_quintiles (date, store_id, total_sales, cumulative_sales_pct, quintile) VALUES %s",
+            [(target_date, store_id, sales, cum_pct, q) for store_id, sales, cum_pct, q in store_details],
+            template="(%s, %s, %s, %s, %s)",
+        )
+
+    print(f"Quintiles persistidos: {len(product_details)} productos, {len(store_details)} tiendas")
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +257,7 @@ def count_consecutive_overstock_days(items, current_index, doh_threshold, histor
 
 def load_data(cur, target_date, settings):
     """
-    Carga datos de daily_data para el rango requerido, agrupa por (product_id, store_id)
+    Carga datos de daily_data para el rango requerido, agrupa por (upc, store_id)
     y calcula quintiles de facturación. Retorna un dict con todo lo necesario para
     ambos evaluadores de alarmas, o None si hay un error irrecuperable.
     """
@@ -234,13 +273,12 @@ def load_data(cur, target_date, settings):
     print(f"Ventana de historial: {min_days}-{max_days} días")
 
     cur.execute("""
-        SELECT d.date, d.product_id, p.upc, d.store_id,
+        SELECT d.date, d.upc, d.store_id,
                d.so_units, d.so_amount, d.inv_on_hand,
                d.cataloged, d.unit_cost
         FROM daily_data d
-        JOIN products p ON p.id = d.product_id
         WHERE d.date BETWEEN %s AND %s
-        ORDER BY d.product_id, d.store_id, d.date
+        ORDER BY d.upc, d.store_id, d.date
     """, (date_from, date_to))
 
     rows = cur.fetchall()
@@ -250,13 +288,12 @@ def load_data(cur, target_date, settings):
         print("No hay datos para procesar.")
         return None
 
-    # Agrupar por (product_id, store_id)
+    # Agrupar por (upc, store_id)
     groups = defaultdict(list)
     for row in rows:
-        d_date, product_id, upc, store_id, so_units, so_amount, inv_on_hand, cataloged, unit_cost = row
-        groups[(product_id, store_id)].append({
+        d_date, upc, store_id, so_units, so_amount, inv_on_hand, cataloged, unit_cost = row
+        groups[(upc, store_id)].append({
             "date": d_date,
-            "product_id": product_id,
             "upc": upc,
             "store_id": store_id,
             "so_units": so_units,
@@ -291,15 +328,15 @@ def load_data(cur, target_date, settings):
     store_sales = defaultdict(float)
 
     for row in rows:
-        d_date, product_id, upc, store_id, so_units, so_amount, inv_on_hand, cataloged, unit_cost = row
+        d_date, upc, store_id, so_units, so_amount, inv_on_hand, cataloged, unit_cost = row
         if d_date not in history_dates:
             continue
         sales = float(so_amount) if so_amount is not None else 0.0
         product_sales[upc] += sales
         store_sales[store_id] += sales
 
-    product_quintiles = calculate_revenue_quintiles(dict(product_sales))
-    store_quintiles = calculate_revenue_quintiles(dict(store_sales))
+    product_quintiles, product_quintile_details = calculate_revenue_quintiles(dict(product_sales))
+    store_quintiles, store_quintile_details = calculate_revenue_quintiles(dict(store_sales))
 
     print(f"Productos con quintil: {len(product_quintiles)}, Tiendas con quintil: {len(store_quintiles)}")
 
@@ -310,6 +347,8 @@ def load_data(cur, target_date, settings):
         "effective_history": effective_history,
         "product_quintiles": product_quintiles,
         "store_quintiles": store_quintiles,
+        "product_quintile_details": product_quintile_details,
+        "store_quintile_details": store_quintile_details,
     }
 
 
@@ -320,7 +359,7 @@ def load_data(cur, target_date, settings):
 def evaluate_dead_poor_display_alarms(shared, settings):
     """
     Evalúa dead_inventory y poor_display sobre los grupos pre-cargados.
-    Retorna dict {(product_id, store_id): {"alarm_type": ..., "data_item": {...}}}.
+    Retorna dict {(upc, store_id): {"alarm_type": ..., "data_item": {...}}}.
     """
     target_date = shared["target_date"]
     groups = shared["groups"]
@@ -331,7 +370,7 @@ def evaluate_dead_poor_display_alarms(shared, settings):
 
     alarms = {}
 
-    for (product_id, store_id), items in groups.items():
+    for (upc, store_id), items in groups.items():
         if len(items) < min_days + 1:
             continue
 
@@ -365,7 +404,7 @@ def evaluate_dead_poor_display_alarms(shared, settings):
         alarm_days = count_consecutive_dead_days(items, target_item_idx)
 
         # Severity from quintiles
-        q_product = product_quintiles.get(target_item["upc"], 5)
+        q_product = product_quintiles.get(upc, 5)
         q_store = store_quintiles.get(store_id, 5)
         severity = min(10, max(1, q_product + q_store - 1))
 
@@ -384,7 +423,7 @@ def evaluate_dead_poor_display_alarms(shared, settings):
 
         unit_cost = float(target_item["unit_cost"]) if target_item["unit_cost"] is not None else 0.0
 
-        alarms[(product_id, store_id)] = {
+        alarms[(upc, store_id)] = {
             "alarm_type": alarm_type,
             "data_item": {
                 "date": str(target_date),
@@ -405,7 +444,7 @@ def evaluate_dead_poor_display_alarms(shared, settings):
 def evaluate_overstock_alarms(shared, settings):
     """
     Evalúa overstock sobre los grupos pre-cargados.
-    Retorna dict {(product_id, store_id): {"alarm_type": ..., "data_item": {...}}}.
+    Retorna dict {(upc, store_id): {"alarm_type": ..., "data_item": {...}}}.
     """
     target_date = shared["target_date"]
     groups = shared["groups"]
@@ -421,7 +460,7 @@ def evaluate_overstock_alarms(shared, settings):
 
     alarms = {}
 
-    for (product_id, store_id), items in groups.items():
+    for (upc, store_id), items in groups.items():
         if len(items) < min_days + 1:
             continue
 
@@ -471,7 +510,7 @@ def evaluate_overstock_alarms(shared, settings):
             continue
 
         # Severity from quintiles
-        q_product = product_quintiles.get(target_item["upc"], 5)
+        q_product = product_quintiles.get(upc, 5)
         q_store = store_quintiles.get(store_id, 5)
         severity = min(10, max(1, q_product + q_store - 1))
 
@@ -480,7 +519,7 @@ def evaluate_overstock_alarms(shared, settings):
 
         unit_cost = float(target_item["unit_cost"]) if target_item["unit_cost"] is not None else 0.0
 
-        alarms[(product_id, store_id)] = {
+        alarms[(upc, store_id)] = {
             "alarm_type": "overstock",
             "data_item": {
                 "date": str(target_date),
@@ -515,14 +554,14 @@ def upsert_alarms(cur, today_alarms, target_date):
 
     Retorna dict con contadores {inserted, updated, type_changed}.
     """
-    # Load existing open alarms indexed by (product_id, store_id)
+    # Load existing open alarms indexed by (upc, store_id)
     cur.execute(
-        "SELECT id, product_id, store_id, alarm_type, alarm_data FROM alarms WHERE status = 'open'"
+        "SELECT id, upc, store_id, alarm_type, alarm_data FROM alarms WHERE status = 'open'"
     )
     open_alarms = {}
     for row in cur.fetchall():
-        alarm_id, product_id, store_id, alarm_type, alarm_data = row
-        open_alarms[(product_id, store_id)] = {
+        alarm_id, upc, store_id, alarm_type, alarm_data = row
+        open_alarms[(upc, store_id)] = {
             "id": alarm_id,
             "alarm_type": alarm_type,
             "alarm_data": alarm_data,
@@ -530,17 +569,17 @@ def upsert_alarms(cur, today_alarms, target_date):
 
     stats = {"inserted": 0, "updated": 0, "type_changed": 0}
 
-    for (product_id, store_id), alarm_info in today_alarms.items():
+    for (upc, store_id), alarm_info in today_alarms.items():
         new_type = alarm_info["alarm_type"]
         data_item = alarm_info["data_item"]
-        existing = open_alarms.get((product_id, store_id))
+        existing = open_alarms.get((upc, store_id))
 
         if existing is None:
             # Caso C: Nueva alarma
             cur.execute(
-                "INSERT INTO alarms (product_id, store_id, alarm_type, alarm_data, ref_id, status, started_at, updated_at) "
+                "INSERT INTO alarms (upc, store_id, alarm_type, alarm_data, ref_id, status, started_at, updated_at) "
                 "VALUES (%s, %s, %s, %s, NULL, 'open', %s, %s)",
-                (product_id, store_id, new_type, json.dumps([data_item]), target_date, target_date),
+                (upc, store_id, new_type, json.dumps([data_item]), target_date, target_date),
             )
             stats["inserted"] += 1
 
@@ -565,9 +604,9 @@ def upsert_alarms(cur, today_alarms, target_date):
                 (json.dumps([close_item]), target_date, target_date, existing["id"]),
             )
             cur.execute(
-                "INSERT INTO alarms (product_id, store_id, alarm_type, alarm_data, ref_id, status, started_at, updated_at) "
+                "INSERT INTO alarms (upc, store_id, alarm_type, alarm_data, ref_id, status, started_at, updated_at) "
                 "VALUES (%s, %s, %s, %s, %s, 'open', %s, %s)",
-                (product_id, store_id, new_type, json.dumps([data_item]), existing["id"], target_date, target_date),
+                (upc, store_id, new_type, json.dumps([data_item]), existing["id"], target_date, target_date),
             )
             stats["type_changed"] += 1
 
@@ -579,12 +618,12 @@ def close_stale_alarms(cur, today_alarms, shared, target_date):
     Fase 3: Cierra alarmas abiertas que no fueron tocadas hoy (la condición ya no aplica).
 
     Busca alarmas con updated_at < target_date, construye un último data_item
-    con los datos actuales del par (product_id, store_id) y "closed": true.
+    con los datos actuales del par (upc, store_id) y "closed": true.
 
     Retorna cantidad de alarmas cerradas.
     """
     cur.execute(
-        "SELECT id, product_id, store_id, alarm_type, alarm_data "
+        "SELECT id, upc, store_id, alarm_type, alarm_data "
         "FROM alarms WHERE status = 'open' AND updated_at < %s",
         (target_date,),
     )
@@ -601,9 +640,9 @@ def close_stale_alarms(cur, today_alarms, shared, target_date):
 
     closed = 0
 
-    for alarm_id, product_id, store_id, alarm_type, alarm_data in stale_rows:
+    for alarm_id, upc, store_id, alarm_type, alarm_data in stale_rows:
         # Build a close item from current data if available
-        items = groups.get((product_id, store_id))
+        items = groups.get((upc, store_id))
         close_item = {"date": str(target_date), "closed": True}
 
         if items:
@@ -674,6 +713,14 @@ def generate_all_alarms(cur, target_date):
     shared = load_data(cur, target_date, settings)
     if shared is None:
         return 0
+
+    # 2b. Persist quintiles
+    print("\n--- Persistiendo quintiles ---")
+    save_quintiles_to_db(
+        cur, target_date,
+        shared["product_quintile_details"],
+        shared["store_quintile_details"],
+    )
 
     # 3. Fase 1: Evaluate each alarm type
     print("\n--- Evaluando dead_inventory / poor_display ---")

@@ -151,7 +151,7 @@ def deduplicate_sell_out(data):
 def upsert_products(cur, products, upc_cache):
     """
     products: list of (upc, description) — solo los que no están en cache.
-    Hace INSERT … ON CONFLICT (upc) DO UPDATE y retorna mapping upc → id.
+    Hace INSERT … ON CONFLICT (upc) DO UPDATE SET description.
     """
     if not products:
         return
@@ -160,11 +160,10 @@ def upsert_products(cur, products, upc_cache):
         INSERT INTO products (upc, description)
         VALUES %s
         ON CONFLICT (upc) DO UPDATE SET description = EXCLUDED.description
-        RETURNING id, upc
     """
-    rows = execute_values(cur, sql, products, template="(%s, %s)", fetch=True)
-    for pid, upc in rows:
-        upc_cache[upc] = pid
+    execute_values(cur, sql, products, template="(%s, %s)")
+    for upc, _ in products:
+        upc_cache.add(upc)
 
 
 def upsert_stores(cur, stores, store_cache):
@@ -195,10 +194,10 @@ def insert_daily_data(cur, rows):
 
     sql = """
         INSERT INTO daily_data
-            (date, product_id, store_id, so_units, unit_cost, so_amount,
+            (date, upc, store_id, so_units, unit_cost, so_amount,
              inv_on_hand, inv_in_transit, inv_in_warehouse, inv_on_order, cataloged)
         VALUES %s
-        ON CONFLICT (date, product_id, store_id)
+        ON CONFLICT (date, upc, store_id)
         DO UPDATE SET
             so_units = EXCLUDED.so_units,
             unit_cost = EXCLUDED.unit_cost,
@@ -292,7 +291,7 @@ def process_date(cur, date_str, files, upc_cache, store_cache):
             skipped += 1
             continue
 
-        if upc not in upc_cache:
+        if upc not in upc_cache and upc not in new_products:
             new_products[upc] = row.get("Item Desc 1", "") or ""
         if store_id not in store_cache:
             new_stores[store_id] = row.get("Store Name", "") or ""
@@ -328,8 +327,7 @@ def process_date(cur, date_str, files, upc_cache, store_cache):
         except (ValueError, TypeError):
             continue
 
-        product_id = upc_cache.get(upc)
-        if product_id is None:
+        if upc not in upc_cache:
             continue
 
         key = f"{row.get('Item Nbr')}_{row.get('Store Nbr')}"
@@ -344,7 +342,7 @@ def process_date(cur, date_str, files, upc_cache, store_cache):
 
         daily_rows.append((
             date_obj,
-            product_id,
+            upc,
             store_id,
             safe_int(row.get("POS Qty")),
             safe_float(row.get("Unit Cost")),
@@ -356,9 +354,9 @@ def process_date(cur, date_str, files, upc_cache, store_cache):
             cataloged,
         ))
 
-    # ---- Deduplicar por (date, product_id, store_id) ----
-    # Diferentes Item Nbr pueden mapear al mismo UPC/product_id.
-    # Campos: 0=date, 1=product_id, 2=store_id, 3=so_units, 4=unit_cost,
+    # ---- Deduplicar por (date, upc, store_id) ----
+    # Diferentes Item Nbr pueden mapear al mismo UPC.
+    # Campos: 0=date, 1=upc, 2=store_id, 3=so_units, 4=unit_cost,
     #         5=so_amount, 6=inv_on_hand, 7=inv_in_transit, 8=inv_in_warehouse,
     #         9=inv_on_order, 10=cataloged
     def _safe_add(a, b):
@@ -419,7 +417,7 @@ def main():
 
     conn = psycopg2.connect(DB_DSN)
     total_rows = 0
-    upc_cache = {}    # upc → product_id
+    upc_cache = set()    # known UPCs
     store_cache = set()  # store ids
 
     try:

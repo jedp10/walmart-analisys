@@ -48,8 +48,7 @@ def upgrade() -> None:
     # products
     op.create_table(
         "products",
-        sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
-        sa.Column("upc", sa.String(50), unique=True, nullable=False),
+        sa.Column("upc", sa.String(50), primary_key=True),
         sa.Column("description", sa.String(255)),
     )
 
@@ -85,9 +84,9 @@ def upgrade() -> None:
         "daily_data",
         sa.Column("date", sa.Date, nullable=False),
         sa.Column(
-            "product_id",
-            sa.Integer,
-            sa.ForeignKey("products.id"),
+            "upc",
+            sa.String(50),
+            sa.ForeignKey("products.upc"),
             nullable=False,
         ),
         sa.Column(
@@ -105,7 +104,7 @@ def upgrade() -> None:
         sa.Column("inv_on_order", sa.Integer),
         sa.Column("cataloged", sa.Boolean, server_default=sa.text("FALSE")),
         sa.Column("created_at", sa.TIMESTAMP, server_default=sa.text("NOW()")),
-        sa.PrimaryKeyConstraint("date", "product_id", "store_id"),
+        sa.PrimaryKeyConstraint("date", "upc", "store_id"),
     )
 
     # alarms
@@ -113,9 +112,9 @@ def upgrade() -> None:
         "alarms",
         sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
         sa.Column(
-            "product_id",
-            sa.Integer,
-            sa.ForeignKey("products.id"),
+            "upc",
+            sa.String(50),
+            sa.ForeignKey("products.upc"),
             nullable=False,
         ),
         sa.Column(
@@ -167,22 +166,52 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.TIMESTAMP, server_default=sa.text("NOW()")),
     )
 
+    # product_sales_quintiles
+    op.create_table(
+        "product_sales_quintiles",
+        sa.Column("date", sa.Date, nullable=False),
+        sa.Column(
+            "upc",
+            sa.String(50),
+            sa.ForeignKey("products.upc"),
+            nullable=False,
+        ),
+        sa.Column("total_sales", sa.Numeric),
+        sa.Column("cumulative_sales_pct", sa.Numeric),
+        sa.Column("quintile", sa.SmallInteger),
+        sa.PrimaryKeyConstraint("date", "upc"),
+    )
+
+    # store_sales_quintiles
+    op.create_table(
+        "store_sales_quintiles",
+        sa.Column("date", sa.Date, nullable=False),
+        sa.Column(
+            "store_id",
+            sa.Integer,
+            sa.ForeignKey("stores.id"),
+            nullable=False,
+        ),
+        sa.Column("total_sales", sa.Numeric),
+        sa.Column("cumulative_sales_pct", sa.Numeric),
+        sa.Column("quintile", sa.SmallInteger),
+        sa.PrimaryKeyConstraint("date", "store_id"),
+    )
+
     # Indices
     op.create_index(
-        "ix_daily_data_product_store", "daily_data", ["product_id", "store_id"]
+        "ix_daily_data_product_store", "daily_data", ["upc", "store_id"]
     )
     op.create_index("ix_daily_data_date", "daily_data", ["date"])
     op.create_index(
-        "ix_alarms_product_store", "alarms", ["product_id", "store_id"]
+        "ix_alarms_product_store", "alarms", ["upc", "store_id"]
     )
     op.create_index("ix_alarms_alarm_type", "alarms", ["alarm_type"])
     op.create_index("ix_alarms_status", "alarms", ["status"])
     op.create_index("ix_alarm_actions_alarm_id", "alarm_actions", ["alarm_id"])
-    op.create_index("ix_products_upc", "products", ["upc"])
 
 
 def downgrade() -> None:
-    op.drop_index("ix_products_upc", table_name="products")
     op.drop_index("ix_alarm_actions_alarm_id", table_name="alarm_actions")
     op.drop_index("ix_alarms_status", table_name="alarms")
     op.drop_index("ix_alarms_alarm_type", table_name="alarms")
@@ -190,6 +219,8 @@ def downgrade() -> None:
     op.drop_index("ix_daily_data_date", table_name="daily_data")
     op.drop_index("ix_daily_data_product_store", table_name="daily_data")
 
+    op.drop_table("store_sales_quintiles")
+    op.drop_table("product_sales_quintiles")
     op.drop_table("settings")
     op.drop_table("alarm_actions")
     op.drop_table("alarms")

@@ -2,32 +2,31 @@ Visualizer
 
 users
 	uno solo
-	
+
 workers
 	id
 	worker_type merchandiser | supervisor
 	parent_id
 	name
-	
-	
+
+
 products
-	id
-	upc
+	upc (PK)
 	description
-	
+
 stores
 	id
 	description
 	lat
 	lng
-	
+
 workers_x_stores
 	store_id
 	worker_id
 
 daily_data (consolidado)
 	date
-	product_id
+	upc
 	store_id
 	so_units
 	so_amount
@@ -40,7 +39,7 @@ daily_data (consolidado)
 
 alarms
 	id
-	product_id
+	upc
 	store_id
 	alarm_type overstock | dead_inventory | poor_display
 	alarm_data [
@@ -91,38 +90,25 @@ alarm_actions
 	attachment
 	worker_id
 	created_at
-	metadata 
-	
+	metadata
+
 
 settings
-	
-alarms_metadata
-	date
-	totals: {
-		store_total_amount:
-		upc_total_amount:
-		store_quantity:
-		upc_quantity:
-	},
-	products [
-		{
-			id:
-		}
-	]
 
-	
+product_sales_quintiles
+	date
+	upc
+	total_sales
+	cumulative_sales_pct
+	quintile
+
+store_sales_quintiles
+	date
+	store_id
+	total_sales
+	cumulative_sales_pct
+	quintile
+
 
 Notas
-
-El proceso diario de actualizacion de alarmas tengo que por cada combinacion producto-tienda tengo que ver si existe una alarma abierta
-si existe y el tipo es el mismo, actualizar registro, agregar un item al array
-si existe y el tipo es distinto, tengo que cerrar la alarma actualizando el json que tenia (tomar el id para usarlo como ref_id) y crear una nueva alarma si no existe, 
-crearla para procesar las que se deben cerrar tengo que hacer una consulta con el updated_at menor que hoy y que esten abiertas, 
-buscar en la historia para agregar el ultimpo elemento del array que justifica el cierre.
-
-
-
-
-
-(dead_inventory, poor_display) tiene precedencia sobre overstock.
 
