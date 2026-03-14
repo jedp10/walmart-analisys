@@ -8,7 +8,7 @@ Réplica de data-preparation/process-walmart-data.js pero con salida a DB.
 import os
 import re
 import shutil
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import psycopg2
 from psycopg2.extras import execute_values
@@ -246,13 +246,15 @@ def process_date(cur, date_str, files, upc_cache, store_cache):
     Procesa un par de archivos (Sell Out + Inventory) para una fecha.
     Retorna la cantidad de filas insertadas.
     """
-    if "sellOut" not in files or "inventory" not in files:
-        print(f"  WARN: archivos incompletos para {date_str}, saltando")
-        return 0
+    if "sellOut" not in files:
+        raise RuntimeError(f"Falta archivo Sell Out para {date_str}. Abortando importación.")
 
     # Leer archivos
     sell_out_raw = read_excel_file(files["sellOut"])
-    inventory_data = read_excel_file(files["inventory"])
+    inventory_data = read_excel_file(files["inventory"]) if "inventory" in files else []
+
+    if "inventory" not in files:
+        print(f"  WARN: falta Inventory para {date_str}, campos de inventario serán NULL")
 
     # Deduplicar Sell Out
     sell_out_data, dups = deduplicate_sell_out(sell_out_raw)
@@ -416,6 +418,25 @@ def main():
     print(f"Encontrados {len(dates)} grupos de archivos\n")
 
     conn = psycopg2.connect(DB_DSN)
+
+    # Chequeo de continuidad: primer fecha en to_process debe ser día siguiente al último en daily_data
+    cur = conn.cursor()
+    cur.execute("SELECT MAX(date) FROM daily_data")
+    last_db_date = cur.fetchone()[0]
+    cur.close()
+
+    if last_db_date is not None:
+        expected_next = last_db_date + timedelta(days=1)
+        first_file_date = datetime.strptime(dates[0], "%Y%m%d").date()
+        if first_file_date != expected_next:
+            conn.close()
+            print(f"ERROR: Discontinuidad detectada.")
+            print(f"  Último día en daily_data: {last_db_date}")
+            print(f"  Primer archivo en to_process: {first_file_date}")
+            print(f"  Se esperaba: {expected_next}")
+            print(f"  Abortando importación.")
+            return
+
     total_rows = 0
     upc_cache = set()    # known UPCs
     store_cache = set()  # store ids
@@ -438,6 +459,9 @@ def main():
                         shutil.move(src, os.path.join(PROCESSED_DIR, os.path.basename(src)))
 
                 print()
+            except RuntimeError:
+                conn.rollback()
+                raise
             except Exception as e:
                 conn.rollback()
                 print(f"  ERROR procesando {date_str}: {e}\n")
